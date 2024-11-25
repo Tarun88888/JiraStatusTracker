@@ -1,0 +1,84 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.MutableIssue 
+import com.atlassian.jira.issue.fields.CustomField
+import com.atlassian.jira.event.type.EventDispatchOption 
+import com.atlassian.jira.issue.history.ChangeItemBean
+import com.atlassian.jira.issue.util.DefaultIssueChangeHolder
+import com.atlassian.jira.issue.ModifiedValue
+
+def changeHistoryManager = ComponentAccesser.changeHistory Manager
+def issueManager = ComponentAccessor.issueManager
+def customFieldManager = ComponentAccessor.customFieldManager
+
+def currDate=new Date()
+
+// Define the JQL query to fetch the issues you want to process
+def jqlQuery = "status in ('Opened', 'In Progress', 'Reopened', 'Resolved', 'Closed")" // Adjust the JQL query as needed 
+def searchService = ComponentAccessor.getComponent(com.atlassian.jira.bc.issue.search.SearchService)
+def user = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+def parseResult = searchService.parseQuery(user, jqlQuery)
+
+if (parseResult.isValid()) {
+
+	def searchResult searchService.search(user, parseResult.query, com.atlassian.jira.web.bean.PagerFilter.getUnlimitedFilter())
+	def issues searchResult.getResults()
+
+	issues.each { issue ->
+
+		def openDate = null
+		def closedDate = null
+		def onHoldStartDate = null
+		def onHoldTotalMillis = 0
+
+	MutableIssue Issue = issueManager.getIssueObject(issue.id as Long)
+	def cField = customFieldManager.getCustomFieldObject(Customfield_name "customfield_number")
+	def cFieldValue = Issue.getCustomFieldValue(cField)
+
+	// Get the issue creation date
+	openDate = Issue.getCreated()
+
+	def changeItems = changeHistoryManager.getChangeItemsForField(Issue, "status")
+	changeItems.each { ChangeItemBean item ->
+	if (item.toString == "Closed") {
+		closedDate item.created
+	} else if (item.toString == "On Hold") { 
+		onHoldStartDate = item.created
+	} else if (item.fromString == "On Hold" && onHoldStartDate != null) { 
+		onHoldTotalMillis += item.created.time - onHoldStartDate.time
+		onHoldStartDate = null
+	}
+}
+
+if (openDate != null) {
+
+	def endDate = closedDate?: currDate
+	def totalMillis (endDate.time openDate.time) - onHoldTotalMillis
+
+	def totalDays (totalMillis / (1000*60*60*24)) as int
+	def totalHours = ((totalMillis % (1000*60*60*24)) / (1000*60*60) as int
+	def totalMinutes ((totalMillis % (1000*60*60)) / (1000*60)) as int
+	def totalSeconds ((totalMillis % (1000*60)) /1000) as int
+
+	def result "$(totalDays)d $(totalHours)h $(totalMinutes) $(totalSeconds)s".toString()
+
+	// Check if the issue is transitioning to "Closed"
+
+	if (Issue.getStatus().getName() in ["Closed", "Reopened", "Resolved", "In Progress", "Opened"]) {
+
+	// Set the value in the target field def changeHolder new DefaultIssueChangeHolder()
+
+	cField.updateValue(null, Issue, new ModifiedValue(cFieldValue, result), changeHolder()
+
+	// Update the issue 
+	issueManager.updateIssue (ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser(), Issue, EventDispatchOption.DO_NOT_DISPATCH, false)
+
+	log.info("Updated issue $(Issue.key) with duration $(result)")
+
+	}
+
+	}
+} else {
+
+log.error("Invalid JQL query: $(jqlQuery)")
+
+}
